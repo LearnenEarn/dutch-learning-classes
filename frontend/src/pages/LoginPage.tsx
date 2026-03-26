@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/store/authStore';
 import { authApi } from '@/api/client';
+import { IS_DEMO } from '@/api/demo';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -29,7 +30,7 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-dutch-cream flex items-center justify-center p-4">
+    <div className="min-h-screen flex items-center justify-center p-4" style={{ backgroundColor: '#F5F0E8' }}>
       <div className="w-full max-w-md">
         {/* Header */}
         <div className="text-center mb-8">
@@ -39,6 +40,22 @@ export default function LoginPage() {
           </h1>
           <p className="text-gray-500 mt-1">Learn Dutch · SRH Haarlem</p>
         </div>
+
+        {/* Demo mode banner */}
+        {IS_DEMO && (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-4 text-center">
+            <p className="text-amber-700 font-semibold text-sm">🎮 Demo Mode</p>
+            <p className="text-amber-600 text-xs mt-1">
+              Enter <strong>any email</strong> and <strong>any password</strong> to explore the app
+            </p>
+            <button
+              onClick={() => { setEmail('demo@srhhaarlem.nl'); setPassword('demo1234'); }}
+              className="mt-2 text-xs bg-amber-100 hover:bg-amber-200 text-amber-800 font-medium px-3 py-1 rounded-lg transition-colors"
+            >
+              Use demo credentials
+            </button>
+          </div>
+        )}
 
         {/* Form */}
         <div className="card">

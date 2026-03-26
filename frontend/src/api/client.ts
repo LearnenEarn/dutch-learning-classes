@@ -11,6 +11,17 @@ import type {
   UserProgress,
   UserStats,
 } from '@/types';
+import {
+  IS_DEMO,
+  demoLogin,
+  demoGetLessons,
+  demoGetLesson,
+  demoGetProgress,
+  demoUpdateProgress,
+  demoGetStats,
+  demoUpdateStats,
+  DEMO_USER,
+} from '@/api/demo';
 
 // ── Axios instance ───────────────────────────────────────────────
 
@@ -44,21 +55,37 @@ api.interceptors.response.use(
 
 export const authApi = {
   register: async (data: RegisterRequest): Promise<AuthResponse> => {
+    if (IS_DEMO) {
+      const result = demoLogin(data.email, data.password);
+      if (result) return { ...result, user: { ...result.user, display_name: data.display_name } };
+      throw new Error('Demo login failed');
+    }
     const res = await api.post<AuthResponse>('/auth/register', data);
     return res.data;
   },
 
   login: async (data: LoginRequest): Promise<AuthResponse> => {
+    if (IS_DEMO) {
+      const result = demoLogin(data.email, data.password);
+      if (result) return result;
+      throw new Error('Demo login failed');
+    }
     const res = await api.post<AuthResponse>('/auth/login', data);
     return res.data;
   },
 
   me: async (): Promise<User> => {
+    if (IS_DEMO) {
+      const token = localStorage.getItem('dutch_app_token');
+      if (token === 'demo-token-not-for-production') return DEMO_USER;
+      throw new Error('Not authenticated');
+    }
     const res = await api.get<User>('/auth/me');
     return res.data;
   },
 
   updateLanguage: async (language_pref: 'en' | 'fa'): Promise<void> => {
+    if (IS_DEMO) return; // Handled in store
     await api.put('/auth/language', { language_pref });
   },
 };
@@ -67,11 +94,17 @@ export const authApi = {
 
 export const lessonsApi = {
   list: async (): Promise<Lesson[]> => {
+    if (IS_DEMO) return demoGetLessons();
     const res = await api.get<Lesson[]>('/lessons');
     return res.data;
   },
 
   get: async (id: number): Promise<LessonWithExercises> => {
+    if (IS_DEMO) {
+      const lesson = demoGetLesson(id);
+      if (!lesson) throw new Error(`Lesson ${id} not found`);
+      return lesson;
+    }
     const res = await api.get<LessonWithExercises>(`/lessons/${id}`);
     return res.data;
   },
@@ -87,21 +120,33 @@ export interface UpdateProgressRequest {
 
 export const progressApi = {
   getAll: async (): Promise<UserProgress[]> => {
+    if (IS_DEMO) return demoGetProgress();
     const res = await api.get<UserProgress[]>('/progress');
     return res.data;
   },
 
   getForLesson: async (lessonId: number): Promise<UserProgress> => {
+    if (IS_DEMO) {
+      const all = demoGetProgress();
+      const found = all.find((p) => p.lesson_id === lessonId);
+      if (!found) throw new Error('No progress');
+      return found;
+    }
     const res = await api.get<UserProgress>(`/progress/${lessonId}`);
     return res.data;
   },
 
   update: async (lessonId: number, data: UpdateProgressRequest): Promise<UserProgress> => {
+    if (IS_DEMO) {
+      demoUpdateStats(data.completed ? 50 : 10);
+      return demoUpdateProgress(lessonId, data.score, data.max_score, data.completed);
+    }
     const res = await api.post<UserProgress>(`/progress/${lessonId}`, data);
     return res.data;
   },
 
   getStats: async (): Promise<UserStats> => {
+    if (IS_DEMO) return demoGetStats();
     const res = await api.get<UserStats>('/stats');
     return res.data;
   },
@@ -114,6 +159,16 @@ export const exercisesApi = {
     exerciseId: number,
     data: ExerciseAttemptRequest
   ): Promise<ExerciseAttemptResponse> => {
+    if (IS_DEMO) {
+      // Demo: award XP and return correct answer immediately
+      if (data.correct) demoUpdateStats(5);
+      return {
+        correct: data.correct,
+        xp_earned: data.correct ? 5 : 0,
+        correct_answer: '—',
+        hint: null,
+      };
+    }
     const res = await api.post<ExerciseAttemptResponse>(
       `/exercises/${exerciseId}/attempt`,
       data

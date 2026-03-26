@@ -20,7 +20,10 @@ import {
   demoUpdateProgress,
   demoGetStats,
   demoUpdateStats,
+  demoGetLeaderboard,
+  demoGetWordOfTheDay,
   DEMO_USER,
+  type LeaderboardEntry,
 } from '@/api/demo';
 
 // ── Axios instance ───────────────────────────────────────────────
@@ -173,6 +176,26 @@ export const exercisesApi = {
       `/exercises/${exerciseId}/attempt`,
       data
     );
+    return res.data;
+  },
+};
+
+// ── Leaderboard ──────────────────────────────────────────────────
+
+export const leaderboardApi = {
+  get: async (): Promise<LeaderboardEntry[]> => {
+    if (IS_DEMO) return demoGetLeaderboard();
+    const res = await api.get<LeaderboardEntry[]>('/leaderboard');
+    return res.data;
+  },
+};
+
+// ── Word of the Day ──────────────────────────────────────────────
+
+export const dailyApi = {
+  getWordOfTheDay: async () => {
+    if (IS_DEMO) return demoGetWordOfTheDay();
+    const res = await api.get('/daily/word');
     return res.data;
   },
 };

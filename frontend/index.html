@@ -2,18 +2,56 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Learn Dutch · SRH Haarlem</title>
+    
+    <!-- PWA manifest -->
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#FF6B00" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Dutch App" />
+    
+    <!-- SEO & Description -->
+    <meta name="description" content="Learn Dutch with interactive games and exercises. A1 NT2 level for international students at SRH Haarlem university." />
+    <meta name="keywords" content="Dutch, Nederlands, language learning, A1, NT2, SRH Haarlem, interactive" />
+    <meta name="author" content="Learn & Earn" />
+    
+    <!-- Open Graph -->
+    <meta property="og:title" content="Dutch Learning App — SRH Haarlem" />
+    <meta property="og:description" content="Interactive Dutch language learning for international students" />
+    <meta property="og:type" content="website" />
+    
+    <!-- Security -->
+    <meta http-equiv="X-Content-Type-Options" content="nosniff" />
+    
+    <!-- Fonts (preconnect for performance) -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:wght@400;600;700&display=swap"
       rel="stylesheet"
     />
+    
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
   </head>
   <body>
+    <noscript>
+      <div style="text-align:center;padding:2rem;font-family:sans-serif">
+        <h1>🇳🇱 Dutch Learning App</h1>
+        <p>JavaScript is required to run this application. Please enable JavaScript in your browser settings.</p>
+      </div>
+    </noscript>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      // Register service worker for PWA
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').catch(() => {});
+        });
+      }
+    </script>
   </body>
 </html>

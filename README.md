@@ -1,139 +1,123 @@
-# 🇳🇱 Learn Dutch — SRH Haarlem
+# 🇳🇱 Dutch Learning App — SRH Haarlem
 
-> A full-stack Dutch language learning app for international students at SRH Haarlem.  
-> Built with **React + TypeScript** (frontend) and **Rust + Axum + PostgreSQL** (backend).
+Interactive Dutch language learning platform for international students at SRH Haarlem university. Targets **A1 NT2** level through games, puzzles, and spaced repetition.
 
----
-
-## Features
-
-- 8-week structured A1 NT2 Dutch curriculum
-- Interactive mini-games: flashcards, drag-and-drop, fill-in-the-blank, timed quizzes, matching, clock game
-- English + Farsi (Persian) translation toggle
-- User accounts with progress tracking, XP, streaks, and badges
-- Lessons 1–3 fully interactive (Weeks 4–8 coming soon)
-
----
-
-## Project Structure
+## 🏗️ Architecture
 
 ```
 dutch-app/
-├── frontend/         React + TypeScript + Vite + Tailwind CSS
-├── backend/          Rust + Axum + SQLx + PostgreSQL
-│   └── migrations/   SQL migration files
-├── .env.example      Environment variable template
-└── README.md
+├── backend/          # Rust/Axum API server
+│   ├── src/          # Source code (routes, models, middleware)
+│   ├── migrations/   # PostgreSQL migrations (SQLx)
+│   └── Dockerfile    # Production Docker image
+├── frontend/         # React/TypeScript SPA
+│   ├── src/          # Components, pages, games, stores
+│   ├── public/       # PWA manifest, service worker
+│   ├── nginx.conf    # Production nginx config
+│   └── Dockerfile    # Production Docker image
+├── docker-compose.yml
+└── .github/workflows/ci.yml
 ```
 
----
+## 🎮 Features
 
-## Prerequisites
+| Feature | Description |
+|---------|-------------|
+| **6 Game Types** | Flashcards, matching, fill-in-blank, timed quiz, drag & drop, clock game |
+| **3 Lessons** | Basics & Environment, The Person, Time & Elements |
+| **Spaced Repetition** | SM-2 algorithm for optimal review scheduling |
+| **Leaderboard** | Materialized view with XP ranking |
+| **Word of the Day** | Daily vocabulary challenge |
+| **PWA Support** | Installable, offline-capable progressive web app |
+| **i18n** | English + Farsi/Persian support |
+| **Demo Mode** | Full app experience without backend |
 
-| Tool | Version |
-|---|---|
-| Node.js | ≥ 20 |
-| npm | ≥ 10 |
-| Rust | ≥ 1.78 (stable) |
-| PostgreSQL | ≥ 15 |
-| sqlx-cli | latest |
+## 🚀 Quick Start
 
-Install `sqlx-cli`:
-```bash
-cargo install sqlx-cli --no-default-features --features rustls,postgres
-```
-
----
-
-## Setup
-
-### 1. Clone and configure environment
+### Demo Mode (no backend needed)
 
 ```bash
-cp .env.example .env
-# Edit .env with your PostgreSQL credentials and JWT secret
-```
-
-### 2. Create the PostgreSQL database
-
-```bash
-createdb dutch_app
-```
-
-### 3. Run migrations
-
-```bash
-cd backend
-sqlx migrate run
-```
-
-### 4. Install frontend dependencies
-
-```bash
-cd frontend
+cd dutch-app
 npm install
+# Start frontend only with mock data
+node node_modules/vite/bin/vite.js frontend --host 0.0.0.0 --port 5173
 ```
 
----
+Login: any email/password works in demo mode.
 
-## Development
-
-### Run both frontend and backend together
+### Full Stack (Docker)
 
 ```bash
-# From dutch-app/ root
-npm install          # installs concurrently
-npm run dev          # starts Vite (port 5173) + Axum (port 3000)
+cd dutch-app
+docker compose up -d
 ```
 
-### Or run separately
+Open http://localhost — frontend (port 80), API (port 3000), PostgreSQL (port 5432).
+
+### Development
 
 ```bash
-# Terminal 1: Backend
-cd backend && cargo run
+# Terminal 1: Backend (requires PostgreSQL)
+cp .env.example .env  # Edit DATABASE_URL, JWT_SECRET
+cargo run --manifest-path backend/Cargo.toml
 
 # Terminal 2: Frontend
 cd frontend && npm run dev
 ```
 
-The frontend dev server proxies `/api/*` requests to `http://localhost:3000`.
+## 🔒 Security
 
----
+- **JWT authentication** (HS256) with configurable expiry
+- **bcrypt password hashing** (cost 12)
+- **Account lockout** after 5 failed login attempts (15 min)
+- **Password complexity** enforcement (uppercase + lowercase + digit)
+- **Input validation** via `validator` crate
+- **Security headers**: X-Content-Type-Options, X-Frame-Options, HSTS, Referrer-Policy, Permissions-Policy
+- **CORS** restricted to configured frontend origin
+- **Audit logging** for security events
+- **Rate limiting** configuration ready
 
-## API Overview
+## 📦 Tech Stack
 
-| Endpoint | Method | Auth | Description |
-|---|---|---|---|
-| `/api/health` | GET | No | Health check |
-| `/api/auth/register` | POST | No | Create account |
-| `/api/auth/login` | POST | No | Login, returns JWT |
-| `/api/auth/me` | GET | Yes | Get current user |
-| `/api/auth/language` | PUT | Yes | Update language preference |
-| `/api/lessons` | GET | No | List all lessons |
-| `/api/lessons/:id` | GET | No | Get lesson + exercises |
-| `/api/progress` | GET | Yes | Get all user progress |
-| `/api/progress/:id` | POST | Yes | Update lesson progress |
-| `/api/stats` | GET | Yes | Get XP, streak, badges |
-| `/api/exercises/:id/attempt` | POST | Yes | Submit exercise attempt |
+| Layer | Technology |
+|-------|-----------|
+| Frontend | React 18, TypeScript, Vite, Tailwind CSS, Framer Motion |
+| State | Zustand (persisted) |
+| Routing | React Router v6 |
+| DnD | @dnd-kit (drag & drop) |
+| Backend | Rust, Axum 0.8, Tokio |
+| Database | PostgreSQL 16, SQLx 0.8 |
+| Auth | jsonwebtoken, bcrypt |
+| Deploy | Docker, Nginx, GitHub Actions CI/CD |
 
----
+## 🗃️ Database Schema
 
-## Lesson Content
+- **users** — accounts with email/password, lockout fields
+- **lessons** — 8 week curriculum (3 published)
+- **exercises** — 85+ exercises across 8 types
+- **user_progress** — per-lesson completion tracking
+- **user_stats** — XP, streaks, badges (JSONB)
+- **exercise_attempts** — detailed attempt history
+- **spaced_repetition** — SM-2 algorithm state per user/exercise
+- **daily_challenges** — word of the day
+- **audit_log** — security event tracking
+- **login_attempts** — brute force protection
+- **leaderboard** — materialized view for fast ranking
 
-| Week | Theme | Status |
-|---|---|---|
-| 1 | De Basis & De Omgeving | ✅ Published |
-| 2 | De Mens Centraal | ✅ Published |
-| 3 | Tijd & Elementen | ✅ Published |
-| 4 | Eten & Winkelen | 🔒 Coming soon |
-| 5 | Werk & School | 🔒 Coming soon |
-| 6 | Reizen & Vervoer | 🔒 Coming soon |
-| 7 | Sociale Situaties | 🔒 Coming soon |
-| 8 | Eindtoets & NT2 | 🔒 Coming soon |
+## 📊 Scaling Optimizations
 
----
+- Composite & partial indexes on all hot query paths
+- GIN indexes on JSONB columns (badges, options)
+- Materialized view for leaderboard (refreshable)
+- Configurable connection pooling (min/max/idle/lifetime)
+- Partition-ready exercise_attempts table
+- Automatic `updated_at` triggers
+- Statistics tuning for query planner
 
-## Built by
+## 🏗️ Environment Variables
 
-**Learn & Earn · De Koepel Haarlem**  
-*Donny Ruinard, 2025–2026*
+See [`.env.example`](.env.example) for all configuration options.
+
+## 📄 License
+
+© 2024 Learn & Earn — De Koepel, Haarlem

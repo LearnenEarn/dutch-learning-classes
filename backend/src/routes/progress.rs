@@ -4,13 +4,14 @@ use axum::{
     Json,
 };
 use chrono::Utc;
+use validator::Validate;
 
 use crate::{
     error::{AppError, AppResult},
     middleware::auth::AuthUser,
     models::progress::{
-        ExerciseAttemptRequest, ExerciseAttemptResponse, UpdateProgressRequest, UserProgress,
-        UserStats,
+        ExerciseAttemptRequest, ExerciseAttemptResponse, LeaderboardEntry, UpdateProgressRequest,
+        UserProgress, UserStats,
     },
     AppState,
 };
@@ -23,7 +24,7 @@ pub async fn get_all_progress(
     let auth_user = get_auth_user(&extensions)?;
 
     let progress = sqlx::query_as::<_, UserProgress>(
-        "SELECT * FROM user_progress WHERE user_id = $1 ORDER BY lesson_id ASC"
+        "SELECT * FROM user_progress WHERE user_id = $1 ORDER BY lesson_id ASC",
     )
     .bind(auth_user.id)
     .fetch_all(&state.db)
@@ -32,7 +33,7 @@ pub async fn get_all_progress(
     Ok(Json(progress))
 }
 
-/// GET /api/progress/:lesson_id  — get progress for a specific lesson
+/// GET /api/progress/{lesson_id}  — get progress for a specific lesson
 pub async fn get_lesson_progress(
     State(state): State<AppState>,
     extensions: Extensions,
@@ -41,7 +42,7 @@ pub async fn get_lesson_progress(
     let auth_user = get_auth_user(&extensions)?;
 
     let progress = sqlx::query_as::<_, UserProgress>(
-        "SELECT * FROM user_progress WHERE user_id = $1 AND lesson_id = $2"
+        "SELECT * FROM user_progress WHERE user_id = $1 AND lesson_id = $2",
     )
     .bind(auth_user.id)
     .bind(lesson_id)
@@ -52,7 +53,7 @@ pub async fn get_lesson_progress(
     Ok(Json(progress))
 }
 
-/// POST /api/progress/:lesson_id  — upsert progress for a lesson
+/// POST /api/progress/{lesson_id}  — upsert progress for a lesson
 pub async fn update_lesson_progress(
     State(state): State<AppState>,
     extensions: Extensions,
@@ -60,6 +61,11 @@ pub async fn update_lesson_progress(
     Json(payload): Json<UpdateProgressRequest>,
 ) -> AppResult<Json<UserProgress>> {
     let auth_user = get_auth_user(&extensions)?;
+
+    // Validate input
+    payload
+        .validate()
+        .map_err(|e| AppError::Validation(format!("{}", e)))?;
 
     let xp_gain = if payload.completed { 50 } else { 10 };
 
@@ -114,18 +120,29 @@ pub async fn get_stats(
 ) -> AppResult<Json<UserStats>> {
     let auth_user = get_auth_user(&extensions)?;
 
-    let stats = sqlx::query_as::<_, UserStats>(
-        "SELECT * FROM user_stats WHERE user_id = $1"
-    )
-    .bind(auth_user.id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound("Stats not found for user".to_string()))?;
+    let stats = sqlx::query_as::<_, UserStats>("SELECT * FROM user_stats WHERE user_id = $1")
+        .bind(auth_user.id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Stats not found for user".to_string()))?;
 
     Ok(Json(stats))
 }
 
-/// POST /api/exercises/:id/attempt  — submit an exercise attempt
+/// GET /api/leaderboard — public leaderboard from materialized view
+pub async fn get_leaderboard(
+    State(state): State<AppState>,
+) -> AppResult<Json<Vec<LeaderboardEntry>>> {
+    let entries = sqlx::query_as::<_, LeaderboardEntry>(
+        "SELECT * FROM leaderboard ORDER BY rank ASC LIMIT 50",
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(Json(entries))
+}
+
+/// POST /api/exercises/{id}/attempt  — submit an exercise attempt with SM-2 spaced repetition update
 pub async fn submit_exercise_attempt(
     State(state): State<AppState>,
     extensions: Extensions,
@@ -133,6 +150,11 @@ pub async fn submit_exercise_attempt(
     Json(payload): Json<ExerciseAttemptRequest>,
 ) -> AppResult<Json<ExerciseAttemptResponse>> {
     let auth_user = get_auth_user(&extensions)?;
+
+    // Validate
+    payload
+        .validate()
+        .map_err(|e| AppError::Validation(format!("{}", e)))?;
 
     // Fetch exercise for XP reward and correct answer
     let exercise = sqlx::query!(
@@ -143,7 +165,11 @@ pub async fn submit_exercise_attempt(
     .await?
     .ok_or_else(|| AppError::NotFound(format!("Exercise {} not found", exercise_id)))?;
 
-    let xp_earned = if payload.correct { exercise.xp_reward } else { 0 };
+    let xp_earned = if payload.correct {
+        exercise.xp_reward
+    } else {
+        0
+    };
 
     // Record attempt
     sqlx::query(
@@ -177,6 +203,54 @@ pub async fn submit_exercise_attempt(
         .execute(&state.db)
         .await?;
     }
+
+    // ── SM-2 Spaced Repetition Update ──────────────────────────────
+    // Quality: 0-5 scale. correct = 4, incorrect = 1
+    let quality = if payload.correct { 4.0_f64 } else { 1.0 };
+
+    sqlx::query(
+        r#"
+        INSERT INTO spaced_repetition (user_id, exercise_id, ease_factor, interval_days, repetitions, next_review_at, last_reviewed)
+        VALUES ($1, $2, 2.5, 1, CASE WHEN $3 THEN 1 ELSE 0 END, 
+                CURRENT_DATE + INTERVAL '1 day', NOW())
+        ON CONFLICT (user_id, exercise_id) DO UPDATE SET
+            ease_factor = GREATEST(1.3,
+                spaced_repetition.ease_factor + (0.1 - (5.0 - $4) * (0.08 + (5.0 - $4) * 0.02))
+            ),
+            interval_days = CASE
+                WHEN $3 THEN
+                    CASE
+                        WHEN spaced_repetition.repetitions = 0 THEN 1
+                        WHEN spaced_repetition.repetitions = 1 THEN 6
+                        ELSE CEIL(spaced_repetition.interval_days * GREATEST(1.3,
+                            spaced_repetition.ease_factor + (0.1 - (5.0 - $4) * (0.08 + (5.0 - $4) * 0.02))
+                        ))::INT
+                    END
+                ELSE 1
+            END,
+            repetitions = CASE WHEN $3 THEN spaced_repetition.repetitions + 1 ELSE 0 END,
+            next_review_at = CURRENT_DATE + (
+                CASE
+                    WHEN $3 THEN
+                        CASE
+                            WHEN spaced_repetition.repetitions = 0 THEN 1
+                            WHEN spaced_repetition.repetitions = 1 THEN 6
+                            ELSE CEIL(spaced_repetition.interval_days * GREATEST(1.3,
+                                spaced_repetition.ease_factor + (0.1 - (5.0 - $4) * (0.08 + (5.0 - $4) * 0.02))
+                            ))::INT
+                        END
+                    ELSE 1
+                END
+            ) * INTERVAL '1 day',
+            last_reviewed = NOW()
+        "#,
+    )
+    .bind(auth_user.id)
+    .bind(exercise_id)
+    .bind(payload.correct)
+    .bind(quality)
+    .execute(&state.db)
+    .await?;
 
     Ok(Json(ExerciseAttemptResponse {
         correct: payload.correct,

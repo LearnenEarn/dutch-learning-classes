@@ -5,15 +5,19 @@ mod models;
 mod routes;
 
 use axum::{
+    extract::ConnectInfo,
+    http::{HeaderValue, Method},
     middleware as axum_middleware,
     routing::{get, post, put},
     Router,
 };
 use sqlx::postgres::PgPoolOptions;
-use std::net::SocketAddr;
+use std::{net::SocketAddr, time::Duration};
 use tower_http::{
     compression::CompressionLayer,
-    cors::{Any, CorsLayer},
+    cors::CorsLayer,
+    set_header::SetResponseHeaderLayer,
+    timeout::TimeoutLayer,
     trace::TraceLayer,
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -33,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
     // Load .env file
     dotenvy::dotenv().ok();
 
-    // Initialize tracing
+    // Initialize tracing with JSON format in production
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -45,23 +49,37 @@ async fn main() -> anyhow::Result<()> {
     // Load config from environment
     let config = Config::from_env().expect("Failed to load configuration from environment");
 
+    tracing::info!(
+        environment = ?config.environment,
+        "Starting Dutch App backend v{}",
+        env!("CARGO_PKG_VERSION")
+    );
+
+    // ── Database connection pool with optimized settings ────────────
     tracing::info!("Connecting to database...");
 
-    // Connect to PostgreSQL
     let db = PgPoolOptions::new()
-        .max_connections(20)
+        .max_connections(config.db_max_connections)
+        .min_connections(config.db_min_connections)
+        .idle_timeout(Duration::from_secs(config.db_idle_timeout_secs))
+        .max_lifetime(Duration::from_secs(config.db_max_lifetime_secs))
+        .acquire_timeout(Duration::from_secs(5))
         .connect(&config.database_url)
         .await
         .expect("Failed to connect to database");
 
-    tracing::info!("Running database migrations...");
+    tracing::info!(
+        max_conn = config.db_max_connections,
+        min_conn = config.db_min_connections,
+        "Database pool established"
+    );
 
-    // Run SQLx migrations
+    // ── Run migrations ─────────────────────────────────────────────
+    tracing::info!("Running database migrations...");
     sqlx::migrate!("./migrations")
         .run(&db)
         .await
         .expect("Failed to run database migrations");
-
     tracing::info!("Migrations complete.");
 
     let state = AppState {
@@ -69,24 +87,37 @@ async fn main() -> anyhow::Result<()> {
         config: config.clone(),
     };
 
-    // CORS configuration
+    // ── CORS configuration ─────────────────────────────────────────
     let cors = CorsLayer::new()
         .allow_origin(
             config
                 .frontend_origin
-                .parse::<axum::http::HeaderValue>()
+                .parse::<HeaderValue>()
                 .unwrap(),
         )
-        .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([
+            axum::http::header::AUTHORIZATION,
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::ACCEPT,
+        ])
+        .allow_credentials(true)
+        .max_age(Duration::from_secs(3600));
 
-    // Build the router
+    // ── Build the router ───────────────────────────────────────────
     let app = Router::new()
-        // ── Public routes ──────────────────────────────────────────
+        // ── Public routes ──────────────────────────────────────
         .route("/api/health", get(health_check))
+        .route("/api/health/ready", get(readiness_check))
         .route("/api/auth/register", post(routes::auth::register))
         .route("/api/auth/login", post(routes::auth::login))
-        // ── Protected routes (require JWT) ─────────────────────────
+        // ── Protected routes (require JWT) ─────────────────────
         .route(
             "/api/auth/me",
             get(routes::auth::me)
@@ -97,12 +128,23 @@ async fn main() -> anyhow::Result<()> {
             put(routes::auth::update_language)
                 .route_layer(axum_middleware::from_fn_with_state(state.clone(), require_auth)),
         )
+        .route(
+            "/api/auth/change-password",
+            put(routes::auth::change_password)
+                .route_layer(axum_middleware::from_fn_with_state(state.clone(), require_auth)),
+        )
         // Lessons
         .route("/api/lessons", get(routes::lessons::list_lessons))
-        .route("/api/lessons/:id", get(routes::lessons::get_lesson))
+        .route("/api/lessons/{id}", get(routes::lessons::get_lesson))
         .route(
-            "/api/lessons/:id/exercises",
+            "/api/lessons/{id}/exercises",
             get(routes::lessons::get_lesson_exercises),
+        )
+        // Spaced repetition
+        .route(
+            "/api/review/due",
+            get(routes::lessons::get_due_reviews)
+                .route_layer(axum_middleware::from_fn_with_state(state.clone(), require_auth)),
         )
         // Progress (auth required)
         .route(
@@ -111,7 +153,7 @@ async fn main() -> anyhow::Result<()> {
                 .route_layer(axum_middleware::from_fn_with_state(state.clone(), require_auth)),
         )
         .route(
-            "/api/progress/:lesson_id",
+            "/api/progress/{lesson_id}",
             get(routes::progress::get_lesson_progress)
                 .post(routes::progress::update_lesson_progress)
                 .route_layer(axum_middleware::from_fn_with_state(state.clone(), require_auth)),
@@ -122,17 +164,47 @@ async fn main() -> anyhow::Result<()> {
                 .route_layer(axum_middleware::from_fn_with_state(state.clone(), require_auth)),
         )
         .route(
-            "/api/exercises/:id/attempt",
+            "/api/leaderboard",
+            get(routes::progress::get_leaderboard),
+        )
+        .route(
+            "/api/exercises/{id}/attempt",
             post(routes::progress::submit_exercise_attempt)
                 .route_layer(axum_middleware::from_fn_with_state(state.clone(), require_auth)),
         )
-        // ── Middleware layers ───────────────────────────────────────
+        // ── Security headers ──────────────────────────────────
+        .layer(SetResponseHeaderLayer::overriding(
+            axum::http::header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            axum::http::header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("DENY"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            axum::http::HeaderName::from_static("x-xss-protection"),
+            HeaderValue::from_static("1; mode=block"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            axum::http::HeaderName::from_static("referrer-policy"),
+            HeaderValue::from_static("strict-origin-when-cross-origin"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            axum::http::HeaderName::from_static("permissions-policy"),
+            HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            axum::http::header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static("max-age=63072000; includeSubDomains; preload"),
+        ))
+        // ── Middleware layers ──────────────────────────────────
+        .layer(TimeoutLayer::new(Duration::from_secs(30)))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .layer(cors)
         .with_state(state);
 
-    // Bind and serve
+    // ── Bind and serve with graceful shutdown ───────────────────────
     let addr: SocketAddr = format!("{}:{}", config.host, config.port)
         .parse()
         .expect("Invalid host:port");
@@ -140,15 +212,68 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("🚀 Dutch App backend listening on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
+    tracing::info!("Server shut down gracefully");
     Ok(())
 }
 
+/// Health check — returns immediately (liveness probe)
 async fn health_check() -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({
         "status": "ok",
         "service": "dutch-app-backend",
-        "version": env!("CARGO_PKG_VERSION")
+        "version": env!("CARGO_PKG_VERSION"),
+        "timestamp": chrono::Utc::now().to_rfc3339()
     }))
+}
+
+/// Readiness check — verifies database connectivity
+async fn readiness_check(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> axum::Json<serde_json::Value> {
+    let db_ok = sqlx::query_scalar::<_, i32>("SELECT 1")
+        .fetch_one(&state.db)
+        .await
+        .is_ok();
+
+    let pool_info = state.db.size();
+
+    axum::Json(serde_json::json!({
+        "status": if db_ok { "ready" } else { "degraded" },
+        "database": db_ok,
+        "pool_size": pool_info,
+        "version": env!("CARGO_PKG_VERSION"),
+        "timestamp": chrono::Utc::now().to_rfc3339()
+    }))
+}
+
+/// Graceful shutdown signal (Ctrl-C or SIGTERM)
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("Failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => { tracing::info!("Received Ctrl-C, shutting down..."); }
+        _ = terminate => { tracing::info!("Received SIGTERM, shutting down..."); }
+    }
 }

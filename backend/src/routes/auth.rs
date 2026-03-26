@@ -1,13 +1,16 @@
 use axum::{extract::State, http::Extensions, Json};
-use bcrypt::{hash, verify, DEFAULT_COST};
+use bcrypt::{hash, verify};
 use chrono::Utc;
 use jsonwebtoken::{encode, EncodingKey, Header};
 use uuid::Uuid;
+use validator::Validate;
 
 use crate::{
     error::{AppError, AppResult},
     middleware::auth::{AuthUser, Claims},
-    models::user::{AuthResponse, LoginRequest, RegisterRequest, User, UserPublic},
+    models::user::{
+        AuthResponse, ChangePasswordRequest, LoginRequest, RegisterRequest, User, UserPublic,
+    },
     AppState,
 };
 
@@ -16,27 +19,40 @@ pub async fn register(
     State(state): State<AppState>,
     Json(payload): Json<RegisterRequest>,
 ) -> AppResult<Json<AuthResponse>> {
-    // Validate input
-    if payload.email.trim().is_empty() || payload.password.len() < 8 {
-        return Err(AppError::BadRequest(
-            "Email is required and password must be at least 8 characters".to_string(),
+    // Check if registration is enabled
+    if !state.config.enable_registration {
+        return Err(AppError::Forbidden(
+            "Registration is currently disabled".to_string(),
         ));
     }
 
+    // Validate input with the validator crate
+    payload
+        .validate()
+        .map_err(|e| AppError::Validation(format!("{}", e)))?;
+
+    // Enforce password complexity
+    validate_password_strength(&payload.password)?;
+
+    // Sanitize email
+    let email = payload.email.trim().to_lowercase();
+
     // Check if email already exists
-    let existing = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM users WHERE email = $1"
-    )
-    .bind(&payload.email.to_lowercase())
-    .fetch_one(&state.db)
-    .await?;
+    let existing =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE email = $1")
+            .bind(&email)
+            .fetch_one(&state.db)
+            .await?;
 
     if existing > 0 {
         return Err(AppError::Conflict("Email already registered".to_string()));
     }
 
-    // Hash password
-    let password_hash = hash(&payload.password, DEFAULT_COST)?;
+    // Hash password with configurable cost
+    let password_hash = hash(&payload.password, state.config.bcrypt_cost)?;
+
+    // Sanitize display name
+    let display_name = sanitize_text(&payload.display_name);
 
     // Insert user
     let user = sqlx::query_as::<_, User>(
@@ -46,9 +62,9 @@ pub async fn register(
         RETURNING *
         "#,
     )
-    .bind(&payload.email.to_lowercase())
+    .bind(&email)
     .bind(&password_hash)
-    .bind(&payload.display_name)
+    .bind(&display_name)
     .fetch_one(&state.db)
     .await?;
 
@@ -57,6 +73,9 @@ pub async fn register(
         .bind(user.id)
         .execute(&state.db)
         .await?;
+
+    // Audit log
+    log_audit_event(&state, Some(user.id), "register", None).await;
 
     // Generate JWT
     let token = generate_token(&user, &state.config.jwt_secret, state.config.jwt_expiry_hours)?;
@@ -72,20 +91,78 @@ pub async fn login(
     State(state): State<AppState>,
     Json(payload): Json<LoginRequest>,
 ) -> AppResult<Json<AuthResponse>> {
-    let user = sqlx::query_as::<_, User>(
-        "SELECT * FROM users WHERE email = $1"
-    )
-    .bind(&payload.email.to_lowercase())
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::Unauthorized("Invalid email or password".to_string()))?;
+    // Validate input
+    payload
+        .validate()
+        .map_err(|e| AppError::Validation(format!("{}", e)))?;
 
-    let valid = verify(&payload.password, &user.password_hash)?;
-    if !valid {
-        return Err(AppError::Unauthorized("Invalid email or password".to_string()));
+    let email = payload.email.trim().to_lowercase();
+
+    // Check for account lockout
+    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = $1")
+        .bind(&email)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| {
+            // Constant-time: don't reveal whether the email exists
+            AppError::Unauthorized("Invalid email or password".to_string())
+        })?;
+
+    // Check if account is locked
+    if let Some(locked_until) = user.locked_until {
+        if locked_until > Utc::now() {
+            let remaining = (locked_until - Utc::now()).num_minutes();
+            return Err(AppError::AccountLocked(format!(
+                "Account is locked. Try again in {} minutes.",
+                remaining + 1
+            )));
+        }
     }
 
-    // Update last_active in user_stats
+    // Check if account is active
+    if !user.is_active {
+        return Err(AppError::Forbidden(
+            "Account has been deactivated".to_string(),
+        ));
+    }
+
+    // Verify password
+    let valid = verify(&payload.password, &user.password_hash)?;
+    if !valid {
+        // Increment failed login count
+        let new_count = user.failed_login_count + 1;
+        let lock_query = if new_count >= state.config.max_login_attempts as i32 {
+            format!(
+                "UPDATE users SET failed_login_count = {}, locked_until = NOW() + INTERVAL '{} minutes' WHERE id = $1",
+                new_count, state.config.lockout_duration_mins
+            )
+        } else {
+            format!(
+                "UPDATE users SET failed_login_count = {} WHERE id = $1",
+                new_count
+            )
+        };
+
+        sqlx::query(&lock_query)
+            .bind(user.id)
+            .execute(&state.db)
+            .await?;
+
+        // Audit failed login
+        log_audit_event(&state, Some(user.id), "login_failed", None).await;
+
+        return Err(AppError::Unauthorized(
+            "Invalid email or password".to_string(),
+        ));
+    }
+
+    // Reset failed login count on success
+    sqlx::query("UPDATE users SET failed_login_count = 0, locked_until = NULL WHERE id = $1")
+        .bind(user.id)
+        .execute(&state.db)
+        .await?;
+
+    // Update last_active in user_stats with streak calculation
     let today = Utc::now().date_naive();
     sqlx::query(
         r#"
@@ -113,6 +190,9 @@ pub async fn login(
     .execute(&state.db)
     .await?;
 
+    // Audit successful login
+    log_audit_event(&state, Some(user.id), "login_success", None).await;
+
     let token = generate_token(&user, &state.config.jwt_secret, state.config.jwt_expiry_hours)?;
 
     Ok(Json(AuthResponse {
@@ -130,11 +210,13 @@ pub async fn me(
         .get::<AuthUser>()
         .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
 
-    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
-        .bind(auth_user.id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+    let user = sqlx::query_as::<_, User>(
+        "SELECT * FROM users WHERE id = $1 AND is_active = TRUE",
+    )
+    .bind(auth_user.id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
 
     Ok(Json(UserPublic::from(user)))
 }
@@ -155,7 +237,9 @@ pub async fn update_language(
         .ok_or_else(|| AppError::BadRequest("language_pref field required".to_string()))?;
 
     if lang != "en" && lang != "fa" {
-        return Err(AppError::BadRequest("language_pref must be 'en' or 'fa'".to_string()));
+        return Err(AppError::BadRequest(
+            "language_pref must be 'en' or 'fa'".to_string(),
+        ));
     }
 
     sqlx::query("UPDATE users SET language_pref = $1, updated_at = NOW() WHERE id = $2")
@@ -166,6 +250,55 @@ pub async fn update_language(
 
     Ok(Json(serde_json::json!({ "language_pref": lang })))
 }
+
+/// PUT /api/auth/change-password  (requires auth)
+pub async fn change_password(
+    State(state): State<AppState>,
+    extensions: Extensions,
+    Json(payload): Json<ChangePasswordRequest>,
+) -> AppResult<Json<serde_json::Value>> {
+    let auth_user = extensions
+        .get::<AuthUser>()
+        .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
+
+    // Validate
+    payload
+        .validate()
+        .map_err(|e| AppError::Validation(format!("{}", e)))?;
+
+    validate_password_strength(&payload.new_password)?;
+
+    // Fetch current user
+    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
+        .bind(auth_user.id)
+        .fetch_one(&state.db)
+        .await?;
+
+    // Verify current password
+    let valid = verify(&payload.current_password, &user.password_hash)?;
+    if !valid {
+        return Err(AppError::Unauthorized(
+            "Current password is incorrect".to_string(),
+        ));
+    }
+
+    // Hash and update new password
+    let new_hash = hash(&payload.new_password, state.config.bcrypt_cost)?;
+    sqlx::query("UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2")
+        .bind(&new_hash)
+        .bind(auth_user.id)
+        .execute(&state.db)
+        .await?;
+
+    // Audit
+    log_audit_event(&state, Some(auth_user.id), "password_change", None).await;
+
+    Ok(Json(
+        serde_json::json!({ "message": "Password changed successfully" }),
+    ))
+}
+
+// ── Helper functions ─────────────────────────────────────────────────
 
 fn generate_token(user: &User, secret: &str, expiry_hours: i64) -> AppResult<String> {
     let now = Utc::now();
@@ -186,4 +319,52 @@ fn generate_token(user: &User, secret: &str, expiry_hours: i64) -> AppResult<Str
     )?;
 
     Ok(token)
+}
+
+/// Validate password strength: must contain uppercase, lowercase, digit, and special char
+fn validate_password_strength(password: &str) -> AppResult<()> {
+    if password.len() < 8 {
+        return Err(AppError::Validation(
+            "Password must be at least 8 characters".to_string(),
+        ));
+    }
+
+    let has_uppercase = password.chars().any(|c| c.is_uppercase());
+    let has_lowercase = password.chars().any(|c| c.is_lowercase());
+    let has_digit = password.chars().any(|c| c.is_ascii_digit());
+
+    if !has_uppercase || !has_lowercase || !has_digit {
+        return Err(AppError::Validation(
+            "Password must contain uppercase, lowercase, and a digit".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Sanitize text input: trim whitespace, remove control characters
+fn sanitize_text(input: &str) -> String {
+    input
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+}
+
+/// Log an audit event to the database
+async fn log_audit_event(
+    state: &AppState,
+    user_id: Option<Uuid>,
+    action: &str,
+    metadata: Option<serde_json::Value>,
+) {
+    let meta = metadata.unwrap_or_else(|| serde_json::json!({}));
+    let _ = sqlx::query(
+        "INSERT INTO audit_log (user_id, action, metadata) VALUES ($1, $2, $3)",
+    )
+    .bind(user_id)
+    .bind(action)
+    .bind(meta)
+    .execute(&state.db)
+    .await;
 }

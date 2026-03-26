@@ -1,0 +1,29 @@
+{
+  "name": "Dutch Learning App — SRH Haarlem",
+  "short_name": "Dutch App",
+  "description": "Learn Dutch with interactive games and exercises. A1 NT2 level for international students at SRH Haarlem.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FFF8F0",
+  "theme_color": "#FF6B00",
+  "orientation": "portrait-primary",
+  "lang": "en",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["education", "games"],
+  "screenshots": [],
+  "related_applications": [],
+  "prefer_related_applications": false
+}

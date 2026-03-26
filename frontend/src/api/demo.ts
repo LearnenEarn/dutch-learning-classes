@@ -227,4 +227,48 @@ export function demoUpdateStats(xpGained: number): UserStats {
   return updated;
 }
 
+// ── Demo Leaderboard ─────────────────────────────────────────────
+
+export interface LeaderboardEntry {
+  user_id: string;
+  display_name: string;
+  xp_total: number;
+  streak_days: number;
+  longest_streak: number;
+  lessons_completed: number;
+  rank: number;
+}
+
+export function demoGetLeaderboard(): LeaderboardEntry[] {
+  const myStats = demoGetStats();
+  const myProgress = demoGetProgress();
+  const myCompleted = myProgress.filter((p) => p.completed).length;
+
+  return [
+    { user_id: 'peer-1', display_name: 'Aria F.', xp_total: 320, streak_days: 7, longest_streak: 12, lessons_completed: 3, rank: 1 },
+    { user_id: 'peer-2', display_name: 'Luis M.', xp_total: 280, streak_days: 5, longest_streak: 8, lessons_completed: 3, rank: 2 },
+    { user_id: 'peer-3', display_name: 'Sophie K.', xp_total: 210, streak_days: 3, longest_streak: 6, lessons_completed: 2, rank: 3 },
+    { user_id: 'demo-user-001', display_name: 'You (Demo)', xp_total: myStats.xp_total, streak_days: myStats.streak_days, longest_streak: myStats.longest_streak, lessons_completed: myCompleted, rank: 4 },
+    { user_id: 'peer-4', display_name: 'Yuki T.', xp_total: 95, streak_days: 1, longest_streak: 4, lessons_completed: 1, rank: 5 },
+    { user_id: 'peer-5', display_name: 'Ahmed R.', xp_total: 60, streak_days: 0, longest_streak: 2, lessons_completed: 1, rank: 6 },
+  ].sort((a, b) => b.xp_total - a.xp_total).map((e, i) => ({ ...e, rank: i + 1 }));
+}
+
+// ── Word of the Day ──────────────────────────────────────────────
+
+const WORDS_OF_THE_DAY = [
+  { word_nl: 'gezellig', word_en: 'cozy / convivial', example_nl: 'Het is gezellig hier!', example_en: "It's cozy/fun here!" },
+  { word_nl: 'lekker', word_en: 'nice / tasty', example_nl: 'Het eten is lekker.', example_en: 'The food is tasty.' },
+  { word_nl: 'alsjeblieft', word_en: 'please / here you go', example_nl: 'Een koffie, alsjeblieft.', example_en: 'A coffee, please.' },
+  { word_nl: 'dankjewel', word_en: 'thank you', example_nl: 'Dankjewel voor de hulp!', example_en: 'Thank you for the help!' },
+  { word_nl: 'misschien', word_en: 'maybe / perhaps', example_nl: 'Misschien morgen.', example_en: 'Maybe tomorrow.' },
+  { word_nl: 'natuurlijk', word_en: 'of course', example_nl: 'Natuurlijk mag dat!', example_en: 'Of course that is allowed!' },
+  { word_nl: 'eigenlijk', word_en: 'actually / really', example_nl: 'Eigenlijk heb ik geen tijd.', example_en: "Actually, I don't have time." },
+];
+
+export function demoGetWordOfTheDay() {
+  const dayIndex = Math.floor(Date.now() / 86400000) % WORDS_OF_THE_DAY.length;
+  return WORDS_OF_THE_DAY[dayIndex];
+}
+
 export const IS_DEMO = import.meta.env.VITE_DEMO_MODE === 'true';

@@ -3,10 +3,11 @@ import { useAuthStore } from '@/store/authStore';
 import { useProgressStore } from '@/store/progressStore';
 import { useEffect } from 'react';
 import clsx from 'clsx';
+import XPToast from '@/components/XPToast';
 
 export default function Layout() {
   const { user, logout, setLanguage } = useAuthStore();
-  const { stats, loadStats } = useProgressStore();
+  const { stats, loadStats, pendingXP, clearPendingXP } = useProgressStore();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -103,6 +104,9 @@ export default function Layout() {
       <main className="flex-1 max-w-6xl w-full mx-auto px-4 py-8">
         <Outlet />
       </main>
+
+      {/* XP Toast */}
+      <XPToast xp={pendingXP} visible={pendingXP > 0} onDismiss={clearPendingXP} />
 
       {/* Mobile bottom nav */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 flex z-50">

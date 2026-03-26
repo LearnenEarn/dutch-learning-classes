@@ -4,15 +4,18 @@
 
 @layer base {
   html {
-    @apply scroll-smooth;
+    scroll-behavior: smooth;
   }
 
   body {
-    @apply bg-dutch-cream text-gray-900 font-sans antialiased;
+    background-color: #F5F0E8; /* dutch-cream */
+    color: #111827;
+    font-family: 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
 
   h1, h2, h3, h4, h5, h6 {
-    @apply font-display;
+    font-family: 'Playfair Display', Georgia, serif;
   }
 }
 
@@ -24,18 +27,21 @@
 
   /* Button variants */
   .btn-primary {
-    @apply bg-dutch-blue text-white font-semibold px-6 py-3 rounded-xl
+    background-color: #004E98; /* dutch-blue */
+    @apply text-white font-semibold px-6 py-3 rounded-xl
            hover:bg-blue-800 active:scale-95 transition-all duration-150
            disabled:opacity-50 disabled:cursor-not-allowed;
   }
 
   .btn-secondary {
-    @apply bg-dutch-orange text-white font-semibold px-6 py-3 rounded-xl
+    background-color: #FF6B35; /* dutch-orange */
+    @apply text-white font-semibold px-6 py-3 rounded-xl
            hover:bg-orange-600 active:scale-95 transition-all duration-150;
   }
 
   .btn-ghost {
-    @apply text-dutch-blue font-medium px-4 py-2 rounded-xl
+    color: #004E98; /* dutch-blue */
+    @apply font-medium px-4 py-2 rounded-xl
            hover:bg-blue-50 active:scale-95 transition-all duration-150;
   }
 
@@ -50,17 +56,17 @@
   }
 
   .xp-fill {
-    @apply h-full bg-gradient-to-r from-dutch-orange to-dutch-tulip rounded-full transition-all duration-500;
+    @apply h-full rounded-full transition-all duration-500;
+    background: linear-gradient(to right, #FF6B35, #E84855); /* dutch-orange to dutch-tulip */
   }
 
-  /* Game card (flip) */
+  /* Flashcard */
   .flashcard {
-    @apply relative cursor-pointer;
     perspective: 1000px;
   }
 
   .flashcard-inner {
-    @apply relative w-full h-full transition-transform duration-600;
+    transition: transform 0.6s;
     transform-style: preserve-3d;
   }
 
@@ -70,8 +76,9 @@
 
   .flashcard-front,
   .flashcard-back {
-    @apply absolute inset-0 rounded-2xl p-6 flex items-center justify-center;
+    -webkit-backface-visibility: hidden;
     backface-visibility: hidden;
+    @apply absolute inset-0 rounded-2xl p-6 flex items-center justify-center;
   }
 
   .flashcard-back {

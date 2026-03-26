@@ -1,8 +1,20 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: [
+    // Paths relative to this config file (frontend/)
     "./index.html",
     "./src/**/*.{js,ts,jsx,tsx}",
+    // Also resolve from possible alternate CWD (dutch-app root)
+    "./frontend/index.html",
+    "./frontend/src/**/*.{js,ts,jsx,tsx}",
+  ],
+  safelist: [
+    // Safelist all dutch-* custom color utilities used in @layer components
+    { pattern: /bg-dutch-/ },
+    { pattern: /text-dutch-/ },
+    { pattern: /border-dutch-/ },
+    { pattern: /from-dutch-/ },
+    { pattern: /to-dutch-/ },
   ],
   theme: {
     extend: {

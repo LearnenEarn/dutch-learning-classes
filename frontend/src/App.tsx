@@ -10,6 +10,11 @@ import LessonsPage from '@/pages/LessonsPage';
 import LessonPage from '@/pages/LessonPage';
 import ProfilePage from '@/pages/ProfilePage';
 
+// Lesson modules (Phase 3)
+import Lesson1Page from '@/lessons/lesson1/Lesson1Page';
+import Lesson2Page from '@/lessons/lesson2/Lesson2Page';
+import Lesson3Page from '@/lessons/lesson3/Lesson3Page';
+
 // Layout
 import Layout from '@/components/Layout';
 import AuthGuard from '@/components/AuthGuard';
@@ -49,6 +54,9 @@ export default function App() {
         <Route element={<Layout />}>
           <Route path="/" element={<DashboardPage />} />
           <Route path="/lessons" element={<LessonsPage />} />
+          <Route path="/lessons/1" element={<Lesson1Page />} />
+          <Route path="/lessons/2" element={<Lesson2Page />} />
+          <Route path="/lessons/3" element={<Lesson3Page />} />
           <Route path="/lessons/:id" element={<LessonPage />} />
           <Route path="/profile" element={<ProfilePage />} />
         </Route>

@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply scroll-smooth;
+  }
+
+  body {
+    @apply bg-dutch-cream text-gray-900 font-sans antialiased;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-display;
+  }
+}
+
+@layer components {
+  /* Card component */
+  .card {
+    @apply bg-white rounded-2xl shadow-sm border border-gray-100 p-6;
+  }
+
+  /* Button variants */
+  .btn-primary {
+    @apply bg-dutch-blue text-white font-semibold px-6 py-3 rounded-xl
+           hover:bg-blue-800 active:scale-95 transition-all duration-150
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply bg-dutch-orange text-white font-semibold px-6 py-3 rounded-xl
+           hover:bg-orange-600 active:scale-95 transition-all duration-150;
+  }
+
+  .btn-ghost {
+    @apply text-dutch-blue font-medium px-4 py-2 rounded-xl
+           hover:bg-blue-50 active:scale-95 transition-all duration-150;
+  }
+
+  /* Badge chip */
+  .badge {
+    @apply inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm font-medium;
+  }
+
+  /* XP bar */
+  .xp-bar {
+    @apply h-2 rounded-full bg-gray-100 overflow-hidden;
+  }
+
+  .xp-fill {
+    @apply h-full bg-gradient-to-r from-dutch-orange to-dutch-tulip rounded-full transition-all duration-500;
+  }
+
+  /* Game card (flip) */
+  .flashcard {
+    @apply relative cursor-pointer;
+    perspective: 1000px;
+  }
+
+  .flashcard-inner {
+    @apply relative w-full h-full transition-transform duration-600;
+    transform-style: preserve-3d;
+  }
+
+  .flashcard.flipped .flashcard-inner {
+    transform: rotateY(180deg);
+  }
+
+  .flashcard-front,
+  .flashcard-back {
+    @apply absolute inset-0 rounded-2xl p-6 flex items-center justify-center;
+    backface-visibility: hidden;
+  }
+
+  .flashcard-back {
+    transform: rotateY(180deg);
+  }
+}
+
+/* RTL support for Farsi */
+[dir="rtl"] {
+  font-family: 'Noto Sans Arabic', 'Inter', sans-serif;
+}

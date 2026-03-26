@@ -165,7 +165,20 @@ pub async fn submit_exercise_attempt(
     .await?
     .ok_or_else(|| AppError::NotFound(format!("Exercise {} not found", exercise_id)))?;
 
-    let xp_earned = if payload.correct {
+    // ── SERVER-SIDE ANSWER VERIFICATION ──────────────────────────
+    // Never trust the client's `correct` field. Verify against the DB answer.
+    let server_verified_correct = match (&payload.answer_given, &exercise.answer_nl) {
+        (Some(given), answer) => {
+            let normalized_given = given.trim().to_lowercase();
+            let normalized_answer = answer.trim().to_lowercase();
+            normalized_given == normalized_answer
+        }
+        // If no answer_given is supplied, fall back to client claim
+        // (for exercise types like drag-drop where correctness is UI-determined)
+        (None, _) => payload.correct,
+    };
+
+    let xp_earned = if server_verified_correct {
         exercise.xp_reward
     } else {
         0
@@ -180,14 +193,14 @@ pub async fn submit_exercise_attempt(
     )
     .bind(auth_user.id)
     .bind(exercise_id)
-    .bind(payload.correct)
+    .bind(server_verified_correct)
     .bind(&payload.answer_given)
     .bind(payload.time_spent_ms)
     .bind(xp_earned)
     .execute(&state.db)
     .await?;
 
-    // Award XP if correct
+    // Award XP if correct (server-verified)
     if xp_earned > 0 {
         sqlx::query(
             r#"
@@ -206,12 +219,12 @@ pub async fn submit_exercise_attempt(
 
     // ── SM-2 Spaced Repetition Update ──────────────────────────────
     // Quality: 0-5 scale. correct = 4, incorrect = 1
-    let quality = if payload.correct { 4.0_f64 } else { 1.0 };
+    let quality = if server_verified_correct { 4.0_f64 } else { 1.0 };
 
     sqlx::query(
         r#"
         INSERT INTO spaced_repetition (user_id, exercise_id, ease_factor, interval_days, repetitions, next_review_at, last_reviewed)
-        VALUES ($1, $2, 2.5, 1, CASE WHEN $3 THEN 1 ELSE 0 END, 
+        VALUES ($1, $2, 2.5, 1, CASE WHEN $3 THEN 1 ELSE 0 END,
                 CURRENT_DATE + INTERVAL '1 day', NOW())
         ON CONFLICT (user_id, exercise_id) DO UPDATE SET
             ease_factor = GREATEST(1.3,
@@ -247,13 +260,13 @@ pub async fn submit_exercise_attempt(
     )
     .bind(auth_user.id)
     .bind(exercise_id)
-    .bind(payload.correct)
+    .bind(server_verified_correct)
     .bind(quality)
     .execute(&state.db)
     .await?;
 
     Ok(Json(ExerciseAttemptResponse {
-        correct: payload.correct,
+        correct: server_verified_correct,
         xp_earned,
         correct_answer: exercise.answer_nl,
         hint: exercise.hint_en,

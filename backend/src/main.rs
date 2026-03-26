@@ -5,7 +5,6 @@ mod models;
 mod routes;
 
 use axum::{
-    extract::ConnectInfo,
     http::{HeaderValue, Method},
     middleware as axum_middleware,
     routing::{get, post, put},
@@ -13,6 +12,7 @@ use axum::{
 };
 use sqlx::postgres::PgPoolOptions;
 use std::{net::SocketAddr, time::Duration};
+use tower_governor::{GovernorConfigBuilder, GovernorLayer};
 use tower_http::{
     compression::CompressionLayer,
     cors::CorsLayer,
@@ -87,6 +87,27 @@ async fn main() -> anyhow::Result<()> {
         config: config.clone(),
     };
 
+    // ── Rate limiting (governor) ─────────────────────────────────────
+    // Strict rate limit for auth endpoints: uses config values directly
+    let auth_rate_limit = GovernorConfigBuilder::default()
+        .per_second(config.rate_limit_per_second)
+        .burst_size(config.rate_limit_burst)
+        .finish()
+        .expect("Failed to build auth rate limiter");
+
+    // Global rate limit: more lenient (10x the per-second rate, 5x burst)
+    let global_rate_limit = GovernorConfigBuilder::default()
+        .per_second(config.rate_limit_per_second.saturating_mul(10))
+        .burst_size(config.rate_limit_burst.saturating_mul(5))
+        .finish()
+        .expect("Failed to build global rate limiter");
+
+    tracing::info!(
+        auth_rps = config.rate_limit_per_second,
+        auth_burst = config.rate_limit_burst,
+        "Rate limiters configured"
+    );
+
     // ── CORS configuration ─────────────────────────────────────────
     let cors = CorsLayer::new()
         .allow_origin(
@@ -111,12 +132,20 @@ async fn main() -> anyhow::Result<()> {
         .max_age(Duration::from_secs(3600));
 
     // ── Build the router ───────────────────────────────────────────
+    // Auth sub-router with strict per-IP rate limiting
+    let auth_routes = Router::new()
+        .route("/api/auth/register", post(routes::auth::register))
+        .route("/api/auth/login", post(routes::auth::login))
+        .layer(GovernorLayer {
+            config: auth_rate_limit,
+        });
+
     let app = Router::new()
         // ── Public routes ──────────────────────────────────────
         .route("/api/health", get(health_check))
         .route("/api/health/ready", get(readiness_check))
-        .route("/api/auth/register", post(routes::auth::register))
-        .route("/api/auth/login", post(routes::auth::login))
+        // Rate-limited auth routes
+        .merge(auth_routes)
         // ── Protected routes (require JWT) ─────────────────────
         .route(
             "/api/auth/me",
@@ -198,6 +227,9 @@ async fn main() -> anyhow::Result<()> {
             HeaderValue::from_static("max-age=63072000; includeSubDomains; preload"),
         ))
         // ── Middleware layers ──────────────────────────────────
+        .layer(GovernorLayer {
+            config: global_rate_limit,
+        })
         .layer(TimeoutLayer::new(Duration::from_secs(30)))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())

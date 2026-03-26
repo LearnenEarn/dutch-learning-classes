@@ -3,6 +3,7 @@ use axum::{
     middleware::Next,
     response::Response,
 };
+use chrono::Utc;
 use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -27,6 +28,7 @@ pub struct AuthUser {
 }
 
 /// Middleware: validates JWT from Authorization: Bearer <token> header
+/// Also verifies the user account is still active and not locked in the DB.
 pub async fn require_auth(
     State(state): State<AppState>,
     mut req: Request,
@@ -41,6 +43,32 @@ pub async fn require_auth(
     )
     .map_err(|_| AppError::Unauthorized("Invalid or expired token".to_string()))?;
 
+    // ── DB-backed revocation check ──────────────────────────────
+    // Verify user is still active and not locked, even if the JWT is valid.
+    let user_status = sqlx::query_as::<_, (bool, Option<chrono::DateTime<Utc>>)>(
+        "SELECT is_active, locked_until FROM users WHERE id = $1",
+    )
+    .bind(token_data.claims.sub)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| AppError::Internal("Failed to verify user status".to_string()))?;
+
+    match user_status {
+        Some((is_active, locked_until)) => {
+            if !is_active {
+                return Err(AppError::Forbidden("Account has been deactivated".to_string()));
+            }
+            if let Some(locked) = locked_until {
+                if locked > Utc::now() {
+                    return Err(AppError::AccountLocked("Account is temporarily locked".to_string()));
+                }
+            }
+        }
+        None => {
+            return Err(AppError::Unauthorized("User no longer exists".to_string()));
+        }
+    }
+
     let auth_user = AuthUser {
         id: token_data.claims.sub,
         email: token_data.claims.email.clone(),
@@ -51,7 +79,7 @@ pub async fn require_auth(
     Ok(next.run(req).await)
 }
 
-/// Middleware: only allows admin role
+/// Middleware: only allows admin role (also validates user is active in DB)
 pub async fn require_admin(
     State(state): State<AppState>,
     mut req: Request,
@@ -68,6 +96,31 @@ pub async fn require_admin(
 
     if token_data.claims.role != "admin" {
         return Err(AppError::Forbidden("Admin access required".to_string()));
+    }
+
+    // ── DB-backed revocation check (same as require_auth) ───────
+    let user_status = sqlx::query_as::<_, (bool, Option<chrono::DateTime<Utc>>)>(
+        "SELECT is_active, locked_until FROM users WHERE id = $1",
+    )
+    .bind(token_data.claims.sub)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| AppError::Internal("Failed to verify user status".to_string()))?;
+
+    match user_status {
+        Some((is_active, locked_until)) => {
+            if !is_active {
+                return Err(AppError::Forbidden("Account has been deactivated".to_string()));
+            }
+            if let Some(locked) = locked_until {
+                if locked > Utc::now() {
+                    return Err(AppError::AccountLocked("Account is temporarily locked".to_string()));
+                }
+            }
+        }
+        None => {
+            return Err(AppError::Unauthorized("User no longer exists".to_string()));
+        }
     }
 
     let auth_user = AuthUser {

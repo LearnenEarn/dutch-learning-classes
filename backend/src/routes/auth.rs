@@ -1,4 +1,4 @@
-use axum::{extract::State, http::Extensions, Json};
+use axum::{extract::State, http::{Extensions, HeaderMap}, Json};
 use bcrypt::{hash, verify};
 use chrono::Utc;
 use jsonwebtoken::{encode, EncodingKey, Header};
@@ -17,6 +17,7 @@ use crate::{
 /// POST /api/auth/register
 pub async fn register(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(payload): Json<RegisterRequest>,
 ) -> AppResult<Json<AuthResponse>> {
     // Check if registration is enabled
@@ -74,8 +75,8 @@ pub async fn register(
         .execute(&state.db)
         .await?;
 
-    // Audit log
-    log_audit_event(&state, Some(user.id), "register", None).await;
+    // Audit log (with IP and User-Agent)
+    log_audit_event(&state, Some(user.id), "register", None, &headers).await;
 
     // Generate JWT
     let token = generate_token(&user, &state.config.jwt_secret, state.config.jwt_expiry_hours)?;
@@ -89,6 +90,7 @@ pub async fn register(
 /// POST /api/auth/login
 pub async fn login(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(payload): Json<LoginRequest>,
 ) -> AppResult<Json<AuthResponse>> {
     // Validate input
@@ -129,27 +131,32 @@ pub async fn login(
     // Verify password
     let valid = verify(&payload.password, &user.password_hash)?;
     if !valid {
-        // Increment failed login count
+        // Increment failed login count using parameterized queries (no format! SQL)
         let new_count = user.failed_login_count + 1;
-        let lock_query = if new_count >= state.config.max_login_attempts as i32 {
-            format!(
-                "UPDATE users SET failed_login_count = {}, locked_until = NOW() + INTERVAL '{} minutes' WHERE id = $1",
-                new_count, state.config.lockout_duration_mins
-            )
-        } else {
-            format!(
-                "UPDATE users SET failed_login_count = {} WHERE id = $1",
-                new_count
-            )
-        };
 
-        sqlx::query(&lock_query)
+        if new_count >= state.config.max_login_attempts as i32 {
+            // Lock the account: set failed count and lock_until via parameters
+            sqlx::query(
+                "UPDATE users SET failed_login_count = $1, locked_until = NOW() + ($2 || ' minutes')::INTERVAL WHERE id = $3",
+            )
+            .bind(new_count)
+            .bind(state.config.lockout_duration_mins.to_string())
             .bind(user.id)
             .execute(&state.db)
             .await?;
+        } else {
+            // Just increment the counter
+            sqlx::query(
+                "UPDATE users SET failed_login_count = $1 WHERE id = $2",
+            )
+            .bind(new_count)
+            .bind(user.id)
+            .execute(&state.db)
+            .await?;
+        }
 
-        // Audit failed login
-        log_audit_event(&state, Some(user.id), "login_failed", None).await;
+        // Audit failed login (with IP and User-Agent)
+        log_audit_event(&state, Some(user.id), "login_failed", None, &headers).await;
 
         return Err(AppError::Unauthorized(
             "Invalid email or password".to_string(),
@@ -190,8 +197,8 @@ pub async fn login(
     .execute(&state.db)
     .await?;
 
-    // Audit successful login
-    log_audit_event(&state, Some(user.id), "login_success", None).await;
+    // Audit successful login (with IP and User-Agent)
+    log_audit_event(&state, Some(user.id), "login_success", None, &headers).await;
 
     let token = generate_token(&user, &state.config.jwt_secret, state.config.jwt_expiry_hours)?;
 
@@ -254,6 +261,7 @@ pub async fn update_language(
 /// PUT /api/auth/change-password  (requires auth)
 pub async fn change_password(
     State(state): State<AppState>,
+    headers: HeaderMap,
     extensions: Extensions,
     Json(payload): Json<ChangePasswordRequest>,
 ) -> AppResult<Json<serde_json::Value>> {
@@ -290,8 +298,8 @@ pub async fn change_password(
         .execute(&state.db)
         .await?;
 
-    // Audit
-    log_audit_event(&state, Some(auth_user.id), "password_change", None).await;
+    // Audit (with IP and User-Agent)
+    log_audit_event(&state, Some(auth_user.id), "password_change", None, &headers).await;
 
     Ok(Json(
         serde_json::json!({ "message": "Password changed successfully" }),
@@ -351,20 +359,43 @@ fn sanitize_text(input: &str) -> String {
         .collect::<String>()
 }
 
-/// Log an audit event to the database
+/// Log an audit event to the database with IP and User-Agent
 async fn log_audit_event(
     state: &AppState,
     user_id: Option<Uuid>,
     action: &str,
     metadata: Option<serde_json::Value>,
+    headers: &HeaderMap,
 ) {
     let meta = metadata.unwrap_or_else(|| serde_json::json!({}));
+
+    // Extract client IP from proxy headers (X-Forwarded-For or X-Real-IP)
+    let ip_address = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(|s| s.trim().to_string())
+        .or_else(|| {
+            headers
+                .get("x-real-ip")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
+        });
+
+    // Extract User-Agent header
+    let user_agent = headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
     let _ = sqlx::query(
-        "INSERT INTO audit_log (user_id, action, metadata) VALUES ($1, $2, $3)",
+        "INSERT INTO audit_log (user_id, action, metadata, ip_address, user_agent) VALUES ($1, $2, $3, $4::INET, $5)",
     )
     .bind(user_id)
     .bind(action)
     .bind(meta)
+    .bind(ip_address)
+    .bind(user_agent)
     .execute(&state.db)
     .await;
 }
